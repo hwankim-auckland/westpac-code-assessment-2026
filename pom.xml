@@ -11,7 +11,7 @@
         <relativePath/>
     </parent>
 
-    <groupId>au.com.westpac</groupId>
+    <groupId>nz.co.westpac.poc</groupId>
     <artifactId>bank-account-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>bank-account-service</name>

@@ -19,6 +19,11 @@ Redis for caching.
 - Maven 3.9+
 - PostgreSQL 18 and Redis 8 running locally or reachable over the network
 
+## Local environment
+
+PostgreSQL 18 and Redis 8 for local development run via Docker Compose — see
+[.locl-env/README.md](.locl-env/README.md).
+
 ## Configuration
 
 `src/main/resources/application.yml` contains no real values. Every connection setting is a
