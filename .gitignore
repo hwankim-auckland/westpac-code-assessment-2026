@@ -1,0 +1,34 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.properties
+
+# Compiled output
+*.class
+*.jar
+*.war
+
+# Logs
+*.log
+logs/
+
+# Local environment / secrets (never commit real credentials)
+.env
+.env.*
+application-local.yml
+application-local.yaml
+
+# IDE
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
