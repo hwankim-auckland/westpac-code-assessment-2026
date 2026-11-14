@@ -1,61 +1,109 @@
 # bank-account-service
 
-API for savings bank accounts:
+[![CI](https://github.com/hwankim-auckland/westpac-code-assessment-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/hwankim-auckland/westpac-code-assessment-2026/actions/workflows/ci.yml)
 
-- creates a new savings bank account
-- gets the savings bank account
-- gets all savings bank accounts of the signed-in customer
+REST API for savings bank accounts. It creates a savings bank account, returns a single savings bank
+account and lists every savings bank account of the authenticated customer. Accounts live in
+PostgreSQL, reads are cached in Redis, and every endpoint is protected by a JWT bearer token.
 
-PostgreSQL stores the accounts, Redis caches account reads and holds the not-allowed nickname list.
-Every endpoint is JWT protected; the customer id is taken from the token subject.
+## Contents
 
-## Stack
+- [Overview](#overview)
+- [Tech stack](#tech-stack)
+- [Project structure](#project-structure)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [Authentication](#authentication)
+- [API reference](#api-reference)
+- [Error responses](#error-responses)
+- [Testing](#testing)
+- [Docker](#docker)
+- [Continuous integration](#continuous-integration)
+- [Design notes](#design-notes)
 
-| Component   | Version                                               |
-|-------------|-------------------------------------------------------|
-| Java        | 25                                                    |
-| Spring Boot | 4.1.2 (Spring Framework 7, Jackson 3, Jakarta EE 11)  |
-| Build       | Maven 3.9+                                            |
-| PostgreSQL  | 18.x                                                  |
-| Redis       | 8.x                                                   |
+## Overview
 
-## Prerequisites
+- Creates a new savings bank account for the customer in the token subject
+- Gets the savings bank account by id (served from Redis when cached)
+- Gets all savings bank accounts of the customer, sorted by account number
+- Validates the account nickname (5–30 characters, checked against a Redis blocklist)
+- Limits a customer to five savings bank accounts
+- Issues an `X-Request-Id` for every request and logs each request with `customerId` + `requestId`
+
+## Tech stack
+
+| Component       | Version                                              |
+|-----------------|------------------------------------------------------|
+| Java            | 25                                                   |
+| Spring Boot     | 4.1.2 (Spring Framework 7, Jackson 3, Jakarta EE 11) |
+| Build           | Maven 3.9+                                           |
+| Persistence     | Spring Data JPA + Hibernate, PostgreSQL 18.x         |
+| Cache           | Spring Data Redis, Redis 8.x                         |
+| Migrations      | Flyway                                               |
+| Security        | Spring Security OAuth2 Resource Server (JWT, RSA)    |
+| Testing         | JUnit 5, AssertJ, Mockito, Testcontainers            |
+| Container image | `eclipse-temurin:25-jre`                             |
+
+## Project structure
+
+```
+.
+├── .github/workflows/ci.yml        build, test, docker image
+├── .locl-env/                      local PostgreSQL + Redis stack
+│   ├── docker-compose.yml
+│   └── init/not_allowed_nick_name_lists.csv
+├── Dockerfile
+├── pom.xml
+└── src
+    ├── main
+    │   ├── java/nz/co/westpac/poc
+    │   │   ├── api/                controller, mapper, request/response DTOs
+    │   │   ├── entity/             Account, repository, generators, validator
+    │   │   ├── error/              exceptions and ProblemDetail advice
+    │   │   ├── local/              local-profile token endpoint
+    │   │   ├── logging/            request id and request logging filters
+    │   │   ├── security/           JWT key provider and resource server config
+    │   │   └── service/            AccountService, AccountCache, CustomerService
+    │   └── resources
+    │       ├── application.yml
+    │       └── db/migration/V1__create_accounts.sql
+    └── test/java/nz/co/westpac/poc
+        ├── api/                    end-to-end and mapper tests
+        ├── entity/                 generator and validator tests
+        ├── logging/                filter tests
+        ├── service/                service and cache tests
+        └── support/                TestContainerBase
+```
+
+## Getting started
+
+### Prerequisites
 
 - JDK 25 (`java -version` must report 25)
 - Maven 3.9+
-- PostgreSQL 18 and Redis 8 running locally or reachable over the network
+- Docker (local stack and Testcontainers)
 
-## Local environment
+### Local infrastructure
 
-PostgreSQL 18 and Redis 8 for local development run via Docker Compose — see
-[.locl-env/README.md](.locl-env/README.md). The stack seeds the not-allowed nickname list from
-`.locl-env/init/not_allowed_nick_name_lists.csv`.
+PostgreSQL 18.7 and Redis 8.10.3 run via Docker Compose, together with a one-shot job that loads the
+nickname blocklist:
 
-## Configuration
+```bash
+docker compose -f .locl-env/docker-compose.yml up -d
+```
 
-`src/main/resources/application.yml` contains no real values. Every setting is a placeholder,
-supplied by environment variables or by the `local` profile.
+| Service    | Container | Port | Credentials                                            |
+|------------|-----------|------|--------------------------------------------------------|
+| PostgreSQL | `db`      | 5432 | `accounts_db` / `local_admin` / `some_strong_password` |
+| Redis      | `cache`   | 6379 | no password                                            |
 
-| Variable         | Required | Purpose                                  |
-|------------------|----------|------------------------------------------|
-| `DB_HOST`        | yes      | PostgreSQL host                          |
-| `DB_PORT`        | yes      | PostgreSQL port (usually 5432)           |
-| `DB_NAME`        | yes      | Database name                            |
-| `DB_USERNAME`    | yes      | Database user                            |
-| `DB_PASSWORD`    | yes      | Database password                        |
-| `DB_POOL_SIZE`   | no       | Hikari pool size, default `10`           |
-| `REDIS_HOST`     | yes      | Redis host                               |
-| `REDIS_PORT`     | yes      | Redis port (usually 6379)                |
-| `REDIS_PASSWORD` | no       | Redis password, default empty            |
-| `CACHE_TTL`      | no       | Savings account cache TTL, default `10m` |
-| `JWT_PUBLIC_KEY` | no       | RSA public key (PEM or base64 DER)       |
-| `JWT_PRIVATE_KEY`| no       | RSA private key (PEM or base64 DER)      |
-| `SERVER_PORT`    | no       | HTTP port, default `8080`                |
+The blocklist lives in `.locl-env/init/not_allowed_nick_name_lists.csv` and is loaded into the Redis
+set `not_allowed_nick_name_lists`. Re-run `up -d --force-recreate cache-seed` after editing it.
 
-When no JWT keys are configured, an RSA key pair is generated at application startup. Tokens then
-stop being valid after a restart; set both key variables to keep them stable.
+### Run the application
 
-`application-local.yml` (git-ignored) holds the local connection values:
+Create `src/main/resources/application-local.yml` (git-ignored) with the local connection values, then
+start with the `local` profile:
 
 ```yaml
 spring:
@@ -69,39 +117,62 @@ spring:
       port: 6379
 ```
 
-## Run
-
 ```bash
 mvn spring-boot:run -Dspring-boot.run.profiles=local
-# or
-mvn clean package
-java -jar target/bank-account-service-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
-Health check: `GET http://localhost:8080/actuator/health`.
+The API listens on `http://localhost:8080`, health is at `/actuator/health`.
+
+## Configuration
+
+Every value in `application.yml` is a placeholder resolved from the environment.
+
+| Variable          | Required | Default | Purpose                              |
+|-------------------|----------|---------|--------------------------------------|
+| `DB_HOST`         | yes      | –       | PostgreSQL host                      |
+| `DB_PORT`         | yes      | –       | PostgreSQL port                      |
+| `DB_NAME`         | yes      | –       | Database name                        |
+| `DB_USERNAME`     | yes      | –       | Database user                        |
+| `DB_PASSWORD`     | yes      | –       | Database password                    |
+| `DB_POOL_SIZE`    | no       | `10`    | Hikari maximum pool size             |
+| `REDIS_HOST`      | yes      | –       | Redis host                           |
+| `REDIS_PORT`      | yes      | –       | Redis port                           |
+| `REDIS_PASSWORD`  | no       | empty   | Redis password                       |
+| `CACHE_TTL`       | no       | `10m`   | TTL of a cached savings bank account |
+| `JWT_PUBLIC_KEY`  | no       | empty   | RSA public key, PEM or base64 DER    |
+| `JWT_PRIVATE_KEY` | no       | empty   | RSA private key, PEM or base64 DER   |
+| `SERVER_PORT`     | no       | `8080`  | HTTP port                            |
+
+When neither JWT key is configured, an RSA-2048 key pair is generated at startup. Tokens then stop
+being valid after a restart, so set both variables to keep them stable. Configuring only one of the two
+fails fast.
 
 ## Authentication
 
-`/api/v1/accounts/**` requires `Authorization: Bearer <JWT>`; the token subject is the customer id.
+`/api/v1/accounts/**` requires `Authorization: Bearer <JWT>`. The customer id is taken from the token
+subject and must be a UUID; anything else is rejected with `400`.
 
-With the `local` profile a sample token can be minted for local testing:
+With the `local` profile a sample token can be minted for testing:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/local/token \
+curl -s -X POST http://localhost:8080/api/v1/local/token \
   -H 'Content-Type: application/json' \
   -d '{"customerId":"6d29ceee-e865-49b7-b34f-96f801460f2e"}'
 ```
 
-That endpoint exists only with the `local` profile. `.locl-env/local-api.http` runs the whole flow
-(token, create, bad requests, get, list) from an IDE.
+```json
+{"token":"eyJhbGciOiJSUzI1NiJ9..."}
+```
 
-## API
+That endpoint exists only with the `local` profile. `/actuator/health` and `/actuator/info` are open.
 
-| Method | Path                          | Description                                        |
-|--------|-------------------------------|----------------------------------------------------|
-| POST   | `/api/v1/accounts`            | Creates a new savings bank account                 |
-| GET    | `/api/v1/accounts/{accountId}`| Gets the savings bank account                      |
-| GET    | `/api/v1/accounts`            | Gets all savings bank accounts of the token subject|
+## API reference
+
+| Method | Path                           | Description                                         |
+|--------|--------------------------------|-----------------------------------------------------|
+| POST   | `/api/v1/accounts`             | Creates a new savings bank account                  |
+| GET    | `/api/v1/accounts`             | Gets all savings bank accounts of the token subject |
+| GET    | `/api/v1/accounts/{accountId}` | Gets the savings bank account                       |
 
 ### Create a savings bank account
 
@@ -109,28 +180,25 @@ That endpoint exists only with the `local` profile. `.locl-env/local-api.http` r
 curl -X POST http://localhost:8080/api/v1/accounts \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"customerName":"Jane Tan","accountNickname":"holiday"}'
+  -d '{"accountNickname":"holiday"}'
 ```
 
-`201 Created` with a `Location` header:
+`201 Created`, `Location: /api/v1/accounts/{accountId}`
 
 ```json
 {
   "accountId": "687df11e9559b1f24f2f125e79b60df2db96668a6cf1631bb36ff6b81ccc7ed5",
   "accountNumber": "03 0187 8399940 000",
-  "customerId": "6d29ceee-e865-49b7-b34f-96f801460f2e",
-  "customerName": "Jane Tan",
+  "customerName": "Hwan Kim",
   "accountNickname": "holiday"
 }
 ```
 
-### Get the savings bank account
+### Get a savings bank account
 
 ```bash
 curl http://localhost:8080/api/v1/accounts/{accountId} -H "Authorization: Bearer $TOKEN"
 ```
-
-Returns the savings bank account, served from Redis when cached, otherwise from PostgreSQL.
 
 ### Get all savings bank accounts of the customer
 
@@ -138,58 +206,114 @@ Returns the savings bank account, served from Redis when cached, otherwise from 
 curl http://localhost:8080/api/v1/accounts -H "Authorization: Bearer $TOKEN"
 ```
 
-Returns the savings bank accounts owned by the token subject, sorted by account number.
-
-## Rules and error responses
-
-- `customerName` is required (max 120 characters); `accountNickname` is optional
-- `accountNickname` must be 5–30 characters and must not be in the Redis set
-  `not_allowed_nick_name_lists`
-- a customer cannot hold more than 5 savings bank accounts
-
-| Status | When                                                              |
-|--------|-------------------------------------------------------------------|
-| `400`  | validation failure, nickname too short/long, nickname not allowed |
-| `401`  | missing, invalid or expired JWT                                   |
-| `404`  | savings bank account not found                                    |
-| `409`  | customer already holds 5 savings bank accounts                    |
-| `503`  | PostgreSQL is unavailable                                         |
-
-Errors are returned as RFC 9457 `ProblemDetail`.
-
-## Project layout
-
-```
-src/main/java/nz/co/westpac/poc
-├── Application.java
-├── api/          AccountController, mapper, request/response DTOs
-├── entity/       Account, AccountRepository, generator/, validator/
-├── error/        exceptions and ProblemDetail advice
-├── local/        local-profile token endpoint
-├── security/     JWT key provider and resource-server config
-└── service/      AccountService, AccountCache
-src/main/resources
-├── application.yml
-└── db/migration/V1__create_accounts.sql
+```json
+[
+  {
+    "accountId": "687df11e9559b1f24f2f125e79b60df2db96668a6cf1631bb36ff6b81ccc7ed5",
+    "accountNumber": "03 0187 8399940 000",
+    "customerName": "Hwan Kim",
+    "accountNickname": "holiday"
+  }
+]
 ```
 
-## Tests
+### Rules
+
+| Rule                  | Detail                                                                                 |
+|-----------------------|----------------------------------------------------------------------------------------|
+| `accountNickname`     | optional, 5–30 characters                                                              |
+| Offensive nicknames   | rejected when present in the Redis set `not_allowed_nick_name_lists`, case-insensitive |
+| Accounts per customer | maximum 5                                                                              |
+| `accountNumber`       | `03 0187 {7 digits} {per-customer suffix from 000}`                                    |
+| `customerName`        | resolved from the customer record, not from the request                                |
+
+### Request id
+
+Every response carries `X-Request-Id`: the caller's value when supplied, otherwise a generated UUID.
+The same id is written to the log together with the customer id.
+
+## Error responses
+
+Errors are returned as RFC 9457 `ProblemDetail`:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Invalid account",
+  "status": 400,
+  "detail": "accountNickname must be between 5 and 30 characters",
+  "instance": "/api/v1/accounts"
+}
+```
+
+| Status | When                                                                    |
+|--------|-------------------------------------------------------------------------|
+| `400`  | nickname length, nickname not allowed, malformed JSON, non-UUID subject |
+| `401`  | missing, invalid or expired JWT                                         |
+| `404`  | savings bank account not found                                          |
+| `409`  | customer already holds five savings bank accounts                       |
+| `500`  | unexpected database error                                               |
+| `503`  | PostgreSQL unavailable                                                  |
+
+## Testing
 
 ```bash
-mvn test
+mvn test          # tests
+mvn verify        # build, tests and the packaged jar
 ```
 
-End-to-end tests extend `support/TestContainerBase`, which starts PostgreSQL 18.7 and Redis 8.10.3
-once with Testcontainers and shares the HTTP client, JWT helper and autowired beans, so Docker must
-be running:
+Tests that start the Spring context extend `support/TestContainerBase`, which starts PostgreSQL 18.7
+and Redis 8.10.3 with Testcontainers. Docker must be running; no external services are needed.
 
-| Class                      | Covers                                                            |
-|----------------------------|-------------------------------------------------------------------|
-| `ApplicationTest`          | health endpoint                                                   |
-| `AccountCreateE2ETest`     | creating a savings bank account, optional nickname, 5-account limit|
-| `AccountGetE2ETest`        | get by id, Redis caching, list by token subject, 404 and 401      |
-| `AccountBadRequestE2ETest` | nickname length, blocklist, malformed JSON, non-customer subject  |
-| `RequestIdE2ETest`         | request-id response header                                        |
+| Class                        | Covers                                                              |
+|------------------------------|---------------------------------------------------------------------|
+| `ApplicationTest`            | health endpoint                                                     |
+| `AccountCreateE2ETest`       | create, optional nickname, five-account limit                       |
+| `AccountGetE2ETest`          | get by id, Redis caching, list by token subject, 404, 401           |
+| `AccountBadRequestE2ETest`   | nickname length, blocklist, malformed JSON, non-customer subject    |
+| `RequestIdE2ETest`           | request-id response header                                          |
+| `AccountMapperTest`          | entity to response mapping                                          |
+| `AccountServiceTest`         | create, limit, missing customer, cached and uncached reads, sorting |
+| `AccountCacheTest`           | cache hit, miss, unreadable payload, Redis failure, TTL             |
+| `AccountValidatorTest`       | nickname length and blocklist lookups                               |
+| `AccountIdGeneratorTest`     | 64-character hex ids                                                |
+| `AccountNumberGeneratorTest` | account number format and per-customer suffix                       |
+| `RequestIdFilterTest`        | header reuse, generation, blank/oversized values, MDC cleanup       |
+| `RequestLogFilterTest`       | customer id in the logging context                                  |
 
-Unit tests cover the generators, validator, mapper, service, cache, exception handler, JWT keys,
-both request filters and the local token controller.
+## Docker
+
+The image packages the jar produced by the build, so package first:
+
+```bash
+mvn -DskipTests package
+docker build -t bank-account-service:local .
+docker run --rm -p 8080:8080 \
+  -e DB_HOST=localhost -e DB_PORT=5432 -e DB_NAME=accounts_db \
+  -e DB_USERNAME=local_admin -e DB_PASSWORD=some_strong_password \
+  -e REDIS_HOST=localhost -e REDIS_PORT=6379 \
+  bank-account-service:local
+```
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. checks out the repository and installs Temurin JDK 25 with Maven caching
+2. runs `mvn -B -ntp verify` (unit tests, Testcontainers integration tests, packaged jar)
+3. uploads `surefire-reports` when the build fails and the jar when it succeeds
+4. builds a docker image tagged `<branch>-<short-sha>` (for example `dev-a1b2c3d`)
+5. prints a message instead of pushing the image — publishing to a registry is out of scope
+
+Testcontainers uses the runner's own Docker daemon, so no Docker-in-Docker setup is required.
+
+## Design notes
+
+- `CustomerService` is a mock: customer data is out of scope, so every customer id resolves to the
+  same sample customer name. Real deployments would call a customer service.
+- `AccountNumberGenerator` is a mock of the real bank numbering rules: fixed `03 0187` branch prefix,
+  seven random digits and a per-customer suffix taken from the number of existing accounts.
+- Reads of a single account use cache-aside with a configurable TTL; a Redis failure is treated as a
+  cache miss so the request still succeeds from PostgreSQL.
+- Requests are logged, not stored: each entry is written to the application log with
+  `[customerId=…, requestId=…]`, and both values are also placed in the MDC.
