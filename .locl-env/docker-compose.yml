@@ -31,6 +31,23 @@ services:
       timeout: 3s
       retries: 10
 
+  cache-seed:
+    image: redis:8.10.3
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./init:/init:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        tail -n +2 /init/not_allowed_nick_name_lists.csv \
+          | tr -d '\r' \
+          | grep -v '^[[:space:]]*$$' \
+          | xargs -r redis-cli -h redis SADD not_allowed_nick_name_lists
+    restart: "no"
+
 volumes:
   postgres-data:
   redis-data:

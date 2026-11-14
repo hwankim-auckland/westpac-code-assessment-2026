@@ -20,6 +20,13 @@ Volumes:
 Both services define healthchecks, so `docker ps` reports `(healthy)` once they are accepting
 connections.
 
+## Seed data
+
+`init/not_allowed_nick_name_lists.csv` holds the nicknames that cannot be used on a savings bank
+account. The one-shot `cache-seed` service loads it into the Redis set
+`not_allowed_nick_name_lists` once `redis` is healthy; edit the CSV and re-run
+`docker compose -f .locl-env/docker-compose.yml up -d --force-recreate cache-seed`.
+
 ## Usage
 
 ```bash

@@ -1,0 +1,91 @@
+### Variables
+@baseUrl = http://localhost:8080
+@customerId = 6d29ceee-e865-49b7-b34f-96f801460f2e
+
+### 0. Get a local JWT (only available with the local profile)
+POST {{baseUrl}}/api/v1/local/token
+Content-Type: application/json
+
+{
+  "customerId": "{{customerId}}"
+}
+
+> {%
+    client.global.set("token", response.body.token);
+    client.log("token expires in 1h, length " + response.body.token.length);
+%}
+
+### 1. Create a savings account
+POST {{baseUrl}}/api/v1/accounts
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "customerName": "Jane Tan",
+  "accountNickname": "holiday"
+}
+
+> {%
+    client.global.set("accountId", response.body.accountId);
+    client.log("created account " + response.body.accountId);
+%}
+
+### 2a. Bad request - nickname shorter than 5 characters
+POST {{baseUrl}}/api/v1/accounts
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "customerName": "Jane Tan",
+  "accountNickname": "abcd"
+}
+
+### 2b. Bad request - offensive nickname (blocklist in Redis)
+POST {{baseUrl}}/api/v1/accounts
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "customerName": "Jane Tan",
+  "accountNickname": "admin"
+}
+
+### 2c. Bad request - missing customerName
+POST {{baseUrl}}/api/v1/accounts
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "accountNickname": "holiday"
+}
+
+### 2d. Bad request - malformed JSON
+POST {{baseUrl}}/api/v1/accounts
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "customerName":
+}
+
+### 2e. Unauthorized - no token
+GET {{baseUrl}}/api/v1/accounts/{{accountId}}
+
+### 2f. Not found - unknown account id
+GET {{baseUrl}}/api/v1/accounts/0000000000000000000000000000000000000000000000000000000000000000
+Authorization: Bearer {{token}}
+
+### 3. List every account of the token subject
+GET {{baseUrl}}/api/v1/accounts
+Authorization: Bearer {{token}}
+
+### 4. Get the account (second call is served from Redis)
+GET {{baseUrl}}/api/v1/accounts/{{accountId}}
+Authorization: Bearer {{token}}
+
+> {%
+    client.test("account returned", function () {
+        client.assert(response.status === 200, "expected 200 but was " + response.status);
+        client.assert(response.body.customerId === client.global.get("customerId"), "customerId mismatch");
+    });
+%}
